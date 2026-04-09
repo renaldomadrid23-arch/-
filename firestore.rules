@@ -1,0 +1,108 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required)
+    //   - displayName: string (required)
+    //   - email: string (required)
+    //   - photoURL: string (optional)
+    //   - bio: string (optional)
+    //   - role: string (required, 'craftsman' | 'buyer')
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: works
+    // Document ID: {workId}
+    // Fields:
+    //   - craftsmanId: string (required)
+    //   - craftsmanName: string (required)
+    //   - title: string (required)
+    //   - description: string (optional)
+    //   - imageUrl: string (required)
+    //   - price: number (optional)
+    //   - category: string (optional)
+    //   - createdAt: timestamp (required)
+    //   - likesCount: number (required)
+    //
+    // Collection: chats/{chatId}/messages
+    // Document ID: {messageId}
+    // Fields:
+    //   - senderId: string (required)
+    //   - receiverId: string (required)
+    //   - text: string (required)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'role', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
+             data.email is string && data.email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$") &&
+             data.role in ['craftsman', 'buyer'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidWork(data) {
+      return data.keys().hasAll(['craftsmanId', 'craftsmanName', 'title', 'imageUrl', 'createdAt', 'likesCount']) &&
+             data.craftsmanId == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.imageUrl is string && data.imageUrl.matches("^https?://.*") &&
+             data.likesCount is number &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['senderId', 'receiverId', 'text', 'createdAt']) &&
+             data.senderId == request.auth.uid &&
+             data.text is string && data.text.size() > 0 && data.text.size() < 2000 &&
+             data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                    request.resource.data.role == resource.data.role;
+    }
+
+    match /works/{workId} {
+      allow read: if true; // Publicly viewable works
+      allow create: if isAuthenticated() && isValidWork(request.resource.data);
+      allow update: if isAuthenticated() && (
+        // Owner can update everything except craftsmanId
+        (request.auth.uid == resource.data.craftsmanId && isValidWork(request.resource.data)) ||
+        // Others can only update likesCount (simplified for now)
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount']))
+      );
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.craftsmanId;
+    }
+
+    match /chats/{chatId}/messages/{messageId} {
+      // chatId should ideally be a combination of user IDs to ensure privacy
+      allow read: if isAuthenticated() && (chatId.matches(".*" + request.auth.uid + ".*"));
+      allow create: if isAuthenticated() && isValidMessage(request.resource.data);
+    }
+  }
+}
